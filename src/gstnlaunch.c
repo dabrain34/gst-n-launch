@@ -46,7 +46,9 @@ typedef struct _GstNLaunchPlayer
   GIOChannel *io_stdin;
   GList *branches;
   gboolean interactive;
+  GstState pending_state;
   GstState state;
+  gboolean auto_play;
 } GstNLaunchPlayer;
 
 typedef struct _GstScalableBranch
@@ -105,6 +107,92 @@ player_is_eos (GstNLaunchPlayer * player)
 }
 
 static gboolean
+player_is_state (GstNLaunchPlayer * player, GstState state)
+{
+  GList *l;
+  GstScalableBranch *branch;
+  for (l = player->branches; l; l = l->next) {
+    branch = (GstScalableBranch *) l->data;
+    if (branch->state != state)
+      return FALSE;
+  }
+  return TRUE;
+}
+
+gboolean
+set_branch_state (GstScalableBranch * branch, GstState state)
+{
+  gboolean res = TRUE;
+  GstStateChangeReturn ret;
+
+  g_assert (branch != NULL);
+
+  ret = gst_element_set_state (branch->pipeline, state);
+
+  switch (ret) {
+    case GST_STATE_CHANGE_FAILURE:
+      PRINT ("ERROR: Pipeline doesn't want to pause.");
+      res = FALSE;
+      break;
+    case GST_STATE_CHANGE_NO_PREROLL:
+      PRINT ("Pipeline is live and does not need PREROLL ...");
+      branch->is_live = TRUE;
+      break;
+    case GST_STATE_CHANGE_ASYNC:
+      PRINT ("Pipeline is PREROLLING ...");
+      break;
+      /* fallthrough */
+    case GST_STATE_CHANGE_SUCCESS:
+      if (branch->state == GST_STATE_PAUSED)
+        PRINT ("Pipeline is PREROLLED ...");
+      break;
+  }
+  return res;
+}
+
+gboolean
+set_player_state (GstNLaunchPlayer * player, GstState new_state)
+{
+  GList *l;
+  GstScalableBranch *branch;
+  PRINT ("set player state %d", new_state);
+  for (l = player->branches; l; l = l->next) {
+    branch = (GstScalableBranch *) l->data;
+    if (!set_branch_state (branch, new_state))
+      return FALSE;
+  }
+  player->pending_state = new_state;
+  return TRUE;
+}
+
+static void
+change_player_state (GstNLaunchPlayer * player, GstState state)
+{
+  if (player->state == player->pending_state)
+    return;
+
+  if (!player_is_state (player, state))
+    return;
+
+  player->state = state;
+  switch (state) {
+    case GST_STATE_READY:
+      set_player_state (player, GST_STATE_PAUSED);
+      break;
+    case GST_STATE_PAUSED:
+      PRINT ("PAUSED");
+      if (player->auto_play)
+        set_player_state (player, GST_STATE_PLAYING);
+      break;
+    case GST_STATE_PLAYING:
+      PRINT ("PLAYING");
+      break;
+    default:
+      break;
+  }
+}
+
+static gboolean
 message_cb (GstBus * bus, GstMessage * message, gpointer user_data)
 {
   GstScalableBranch *thiz = (GstScalableBranch *) user_data;
@@ -148,7 +236,6 @@ message_cb (GstBus * bus, GstMessage * message, gpointer user_data)
       break;
     }
     case GST_MESSAGE_EOS:
-      GST_DEBUG_OBJECT (thiz, "Got EOS on branch");
       thiz->eos = TRUE;
       if (player_is_eos (thiz->player)) {
         PRINT ("All pipelines are in EOS. Exit.");
@@ -161,13 +248,8 @@ message_cb (GstBus * bus, GstMessage * message, gpointer user_data)
       GstState old, new, pending;
       if (GST_MESSAGE_SRC (message) == GST_OBJECT_CAST (thiz->pipeline)) {
         gst_message_parse_state_changed (message, &old, &new, &pending);
-        if (thiz->state == GST_STATE_PAUSED && thiz->state == new) {
-          PRINT ("Prerolled done");
-          if (!thiz->player->interactive) {
-            gst_element_set_state (thiz->pipeline, GST_STATE_PLAYING);
-            PRINT ("PLAYING!");
-          }
-        }
+        thiz->state = new;
+        change_player_state (thiz->player, new);
       }
       break;
     }
@@ -363,53 +445,7 @@ error:
   goto done;
 }
 
-gboolean
-set_branch_state (GstScalableBranch * branch, GstState state)
-{
-  gboolean res = TRUE;
-  GstStateChangeReturn ret;
 
-  g_assert (branch != NULL);
-
-  ret = gst_element_set_state (branch->pipeline, state);
-
-  switch (ret) {
-    case GST_STATE_CHANGE_FAILURE:
-      PRINT ("ERROR: Pipeline doesn't want to pause.");
-      res = FALSE;
-      break;
-    case GST_STATE_CHANGE_NO_PREROLL:
-      PRINT ("Pipeline is live and does not need PREROLL ...");
-      branch->is_live = TRUE;
-      break;
-    case GST_STATE_CHANGE_ASYNC:
-      PRINT ("Pipeline is PREROLLING ...");
-      branch->state = GST_STATE_PAUSED;
-      break;
-      /* fallthrough */
-    case GST_STATE_CHANGE_SUCCESS:
-      if (branch->state == GST_STATE_PAUSED) {
-        PRINT ("Pipeline is PREROLLED ...");
-        gst_element_set_state (branch->pipeline, GST_STATE_PLAYING);
-      }
-      break;
-  }
-  return res;
-}
-
-gboolean
-set_branches_state (GstNLaunchPlayer * thiz, GstState new_state)
-{
-  GList *l;
-  GstScalableBranch *branch;
-  for (l = thiz->branches; l; l = l->next) {
-    branch = (GstScalableBranch *) l->data;
-    if (!set_branch_state (branch, new_state))
-      return FALSE;
-  }
-  thiz->state = new_state;
-  return TRUE;
-}
 
 
 /* Process keyboard input */
@@ -433,9 +469,9 @@ handle_keyboard (GIOChannel * source, GIOCondition cond,
         break;
       case 'p':
         if (thiz->state == GST_STATE_PAUSED)
-          set_branches_state (thiz, GST_STATE_PLAYING);
+          set_player_state (thiz, GST_STATE_PLAYING);
         else
-          set_branches_state (thiz, GST_STATE_PAUSED);
+          set_player_state (thiz, GST_STATE_PAUSED);
         break;
     }
   }
@@ -524,15 +560,16 @@ main (int argc, char **argv)
     else
       goto done;
   }
-  PRINT ("Branches created");
+  thiz->state = GST_STATE_NULL;
+  thiz->pending_state = GST_STATE_READY;
+  PRINT ("Branches created and set state to READY");
+
   if (interactive) {
     thiz->io_stdin = g_io_channel_unix_new (fileno (stdin));
     g_io_add_watch (thiz->io_stdin, G_IO_IN, (GIOFunc) handle_keyboard, thiz);
     usage ();
-  } else {
-    PRINT ("Branches set to PAUSE state");
-    set_branches_state (thiz, GST_STATE_PAUSED);
-  }
+  } else
+    thiz->auto_play = TRUE;
 
   thiz->loop = g_main_loop_new (NULL, FALSE);
 #ifdef G_OS_UNIX
