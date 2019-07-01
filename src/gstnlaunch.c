@@ -155,7 +155,7 @@ set_player_state (GstNLaunchPlayer * player, GstState new_state)
 {
   GList *l;
   GstScalableBranch *branch;
-  PRINT ("set player state %d", new_state);
+  PRINT ("set player state %s", gst_element_state_get_name (new_state));
   for (l = player->branches; l; l = l->next) {
     branch = (GstScalableBranch *) l->data;
     if (!set_branch_state (branch, new_state))
