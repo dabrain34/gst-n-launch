@@ -175,18 +175,17 @@ change_player_state (GstNLaunchPlayer * player, GstState state)
     return;
 
   player->state = state;
+  PRINT ("player is %s", gst_element_state_get_name (state));
   switch (state) {
     case GST_STATE_READY:
       if (player->auto_play)
 	set_player_state (player, GST_STATE_PAUSED);
       break;
     case GST_STATE_PAUSED:
-      PRINT ("PAUSED");
       if (player->auto_play)
         set_player_state (player, GST_STATE_PLAYING);
       break;
     case GST_STATE_PLAYING:
-      PRINT ("PLAYING");
       break;
     default:
       break;
