@@ -131,20 +131,20 @@ set_branch_state (GstScalableBranch * branch, GstState state)
 
   switch (ret) {
     case GST_STATE_CHANGE_FAILURE:
-      PRINT ("ERROR: Pipeline doesn't want to pause.");
+      PRINT ("ERROR: %s doesn't want to pause.", GST_ELEMENT_NAME (branch->pipeline));
       res = FALSE;
       break;
     case GST_STATE_CHANGE_NO_PREROLL:
-      PRINT ("Pipeline is live and does not need PREROLL ...");
+      PRINT ("%s is live and does not need PREROLL ...", GST_ELEMENT_NAME (branch->pipeline));
       branch->is_live = TRUE;
       break;
     case GST_STATE_CHANGE_ASYNC:
-      PRINT ("Pipeline is PREROLLING ...");
+      PRINT ("%s is PREROLLING ...", GST_ELEMENT_NAME (branch->pipeline));
       break;
       /* fallthrough */
     case GST_STATE_CHANGE_SUCCESS:
       if (branch->state == GST_STATE_PAUSED)
-        PRINT ("Pipeline is PREROLLED ...");
+        PRINT ("%s is PREROLLED ...", GST_ELEMENT_NAME (branch->pipeline));
       break;
   }
   return res;
