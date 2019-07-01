@@ -563,7 +563,7 @@ main (int argc, char **argv)
   }
   thiz->state = GST_STATE_NULL;
   thiz->pending_state = GST_STATE_READY;
-  PRINT ("Branches created and set state to READY");
+  PRINT ("%d branches created and set state to READY", g_list_length (thiz->branches));
 
   if (interactive) {
     thiz->io_stdin = g_io_channel_unix_new (fileno (stdin));
