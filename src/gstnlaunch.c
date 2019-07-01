@@ -336,7 +336,7 @@ void
 destroy_branch (gpointer data)
 {
   GstScalableBranch *branch = (GstScalableBranch *) data;
-  PRINT ("Destroying pipeline %s", GST_ELEMENT_NAME (branch->pipeline));
+  PRINT ("Destroying %s", GST_ELEMENT_NAME (branch->pipeline));
   gst_element_set_state (branch->pipeline, GST_STATE_READY);
   gst_element_set_state (branch->pipeline, GST_STATE_NULL);
   if (branch->pipeline)
