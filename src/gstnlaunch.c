@@ -588,5 +588,6 @@ done:
   g_strfreev (full_branch_desc_array);
   g_free (thiz);
 
+  gst_deinit ();
   return res;
 }
