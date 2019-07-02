@@ -498,6 +498,7 @@ main (int argc, char **argv)
   gchar **branch_desc;
   gboolean verbose = FALSE;
   gboolean interactive = FALSE;
+  GList *l;
 
   GOptionEntry options[] = {
     {"branch", 'b', 0, G_OPTION_ARG_STRING_ARRAY, &full_branch_desc_array,
@@ -583,6 +584,16 @@ main (int argc, char **argv)
 done:
   if (thiz->loop)
     g_main_loop_unref (thiz->loop);
+
+  for (l = thiz->branches; l; l = g_list_next (l)) {
+    g_autoptr(GstBus) bus = NULL;
+
+    branch = l->data;
+    bus = gst_pipeline_get_bus (GST_PIPELINE (branch->pipeline));
+
+    gst_bus_remove_signal_watch (bus);
+  }
+
   g_list_free_full (thiz->branches, destroy_branch);
   thiz->branches = NULL;
   g_strfreev (full_branch_desc_array);
