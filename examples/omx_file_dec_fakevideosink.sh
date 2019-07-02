@@ -3,7 +3,7 @@
 FILEPATH=$1
 INSTANCES=$2
 
-SRC="filesrc location=$FILEPATH ! queue"
+SRC="filesrc location=$FILEPATH"
 DEC_ELEMENT_X=" ! h264parse ! omxh264dec internal-entropy-buffers=2"
 FAKE_SINK_ELEMENT=" ! fakevideosink sync=TRUE"
 

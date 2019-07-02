@@ -10,7 +10,7 @@ CAPS_X="! video/x-h265, profile=main"
 ENC_ELEMENT_X=" ! omxh265enc control-rate=constant filler-data=false b-frames=3 target-bitrate=1000 prefetch-buffer=true"
 DEC_ELEMENT_X=" ! h264parse ! omxh264dec internal-entropy-buffers=2"
 
-BRANCH_DEC_ENC_X="$FILE_ELEMENT $QUEUE $DEC_ELEMENT_X $QUEUE $ENC_ELEMENT_X $CAPS_X"
+BRANCH_DEC_ENC_X="$FILE_ELEMENT $DEC_ELEMENT_X $QUEUE $ENC_ELEMENT_X $CAPS_X"
 
 
 CMD="./gst-n-launch-1.0 "
