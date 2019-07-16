@@ -49,6 +49,7 @@ typedef struct _GstNLaunchPlayer
   GstState pending_state;
   GstState state;
   gboolean auto_play;
+  gboolean verbose;
 } GstNLaunchPlayer;
 
 typedef struct _GstScalableBranch
@@ -131,11 +132,13 @@ set_branch_state (GstScalableBranch * branch, GstState state)
 
   switch (ret) {
     case GST_STATE_CHANGE_FAILURE:
-      PRINT ("ERROR: %s doesn't want to pause.", GST_ELEMENT_NAME (branch->pipeline));
+      PRINT ("ERROR: %s doesn't want to pause.",
+          GST_ELEMENT_NAME (branch->pipeline));
       res = FALSE;
       break;
     case GST_STATE_CHANGE_NO_PREROLL:
-      PRINT ("%s is live and does not need PREROLL ...", GST_ELEMENT_NAME (branch->pipeline));
+      PRINT ("%s is live and does not need PREROLL ...",
+          GST_ELEMENT_NAME (branch->pipeline));
       branch->is_live = TRUE;
       break;
     case GST_STATE_CHANGE_ASYNC:
@@ -179,7 +182,7 @@ change_player_state (GstNLaunchPlayer * player, GstState state)
   switch (state) {
     case GST_STATE_READY:
       if (player->auto_play)
-	set_player_state (player, GST_STATE_PAUSED);
+        set_player_state (player, GST_STATE_PAUSED);
       break;
     case GST_STATE_PAUSED:
       if (player->auto_play)
@@ -346,13 +349,15 @@ destroy_branch (gpointer data)
 }
 
 GstScalableBranch *
-add_branch (gchar * src_desc, gchar * branch_desc, gchar * sink_desc)
+add_branch (GstNLaunchPlayer * thiz, gchar * src_desc, gchar * branch_desc,
+    gchar * sink_desc)
 {
   GstElement *src, *transform, *sink;
   GError *err = NULL;
   GstPad *src_pad = NULL;
   GstPad *sink_pad = NULL;
   GstScalableBranch *branch = NULL;
+  GstBus *bus;
 
   GST_DEBUG ("Add branch with src %s transform %s sink %s",
       src_desc, branch_desc, sink_desc);
@@ -387,22 +392,24 @@ add_branch (gchar * src_desc, gchar * branch_desc, gchar * sink_desc)
       GST_ERROR_OBJECT (branch,
           "Unable to retrieve the src pad of src element: %s", src_desc);
       gst_object_unref (src);
-      return FALSE;
+      goto error;
     }
     gst_bin_add (GST_BIN (branch->pipeline), src);
     /* retrieve a compatible pad with the src pad */
     sink_pad = gst_element_get_compatible_pad (transform, src_pad, NULL);
     if (!sink_pad) {
       GST_ERROR_OBJECT (branch, "Unable to retreive a sink pad ");
-      return FALSE;
+      goto error;
     }
     /* connect src element with transform bin */
     if (GST_PAD_LINK_FAILED (gst_pad_link (src_pad, sink_pad))) {
       GST_ERROR_OBJECT (branch, "Unable to link src to transform");
-      return FALSE;
+      goto error;
     }
     gst_object_unref (src_pad);
+    src_pad = NULL;
     gst_object_unref (sink_pad);
+    sink_pad = NULL;
   }
 
   if (sink_desc) {
@@ -418,28 +425,47 @@ add_branch (gchar * src_desc, gchar * branch_desc, gchar * sink_desc)
       GST_ERROR_OBJECT (branch,
           "Unable to retrieve the sink pad of sink element %s", sink_desc);
       gst_object_unref (sink);
-      return FALSE;
+      goto error;
     }
     gst_bin_add (GST_BIN (branch->pipeline), sink);
     /* retrieve a compatible pad with the sink pad */
     src_pad = gst_element_get_compatible_pad (transform, sink_pad, NULL);
     if (!src_pad) {
       GST_ERROR_OBJECT (branch, "Unable to get a src pad from transform\n");
-      return FALSE;
+      goto error;
     }
     /* connect sink element with transform bin */
     if (GST_PAD_LINK_FAILED (gst_pad_link (src_pad, sink_pad))) {
       GST_ERROR_OBJECT (branch, "Unable to link sink to transform");
-      return FALSE;
+      goto error;
     }
 
     gst_object_unref (src_pad);
+    src_pad = NULL;
     gst_object_unref (sink_pad);
+    sink_pad = NULL;
   }
+  branch->player = thiz;
+  bus = gst_pipeline_get_bus (GST_PIPELINE (branch->pipeline));
+  g_signal_connect (G_OBJECT (bus), "message", G_CALLBACK (message_cb), branch);
+  gst_bus_add_signal_watch (bus);
+  gst_object_unref (GST_OBJECT (bus));
+  if (thiz->verbose) {
+    branch->deep_notify_id =
+        gst_element_add_property_deep_notify_watch (branch->pipeline, NULL,
+        TRUE);
+  }
+  if (!set_branch_state (branch, GST_STATE_READY))
+    goto error;
+
 done:
   return branch;
 
 error:
+  if (src_pad)
+    gst_object_unref (src_pad);
+  if (sink_pad)
+    gst_object_unref (sink_pad);
   destroy_branch (branch);
   branch = NULL;
   goto done;
@@ -499,10 +525,15 @@ main (int argc, char **argv)
   gboolean verbose = FALSE;
   gboolean interactive = FALSE;
   GList *l;
+  gint repeat = 1;
+  gint i = 0;
 
   GOptionEntry options[] = {
     {"branch", 'b', 0, G_OPTION_ARG_STRING_ARRAY, &full_branch_desc_array,
         "Add a custom branch with gst-launch style description", NULL}
+    ,
+    {"repeat", 'r', 0, G_OPTION_ARG_INT, &repeat,
+        "Repeat the branches n times", NULL}
     ,
     {"verbose", 'v', 0, G_OPTION_ARG_NONE, &verbose,
         ("Output status information and property notifications"), NULL}
@@ -526,7 +557,7 @@ main (int argc, char **argv)
   }
   g_option_context_free (ctx);
   thiz->interactive = interactive;
-
+  thiz->verbose = verbose;
   GST_DEBUG_CATEGORY_INIT (scalable_transcoder_debug, "n-launch", 0,
       "gst-n-launch");
 
@@ -537,33 +568,22 @@ main (int argc, char **argv)
 
   for (branch_desc = full_branch_desc_array;
       branch_desc != NULL && *branch_desc != NULL; ++branch_desc) {
-    GstBus *bus;
-    branch = add_branch (NULL, *branch_desc, NULL);
+    for (i = 0; i < repeat; i++) {
+      branch = add_branch (thiz, NULL, *branch_desc, NULL);
 
-    if (!branch) {
-      res = -2;
-      PRINT ("ERROR: unable to add branch \"%s\"", *branch_desc);
-      goto done;
-    }
-    branch->player = thiz;
-    bus = gst_pipeline_get_bus (GST_PIPELINE (branch->pipeline));
-    g_signal_connect (G_OBJECT (bus), "message", G_CALLBACK (message_cb),
-        branch);
-    gst_bus_add_signal_watch (bus);
-    gst_object_unref (GST_OBJECT (bus));
-    if (verbose) {
-      branch->deep_notify_id =
-          gst_element_add_property_deep_notify_watch (branch->pipeline, NULL,
-          TRUE);
-    }
-    if (set_branch_state (branch, GST_STATE_READY))
+      if (!branch) {
+        res = -2;
+        PRINT ("ERROR: unable to add branch-%d \"%s\"", i, *branch_desc);
+        goto done;
+      }
+
       thiz->branches = g_list_append (thiz->branches, branch);
-    else
-      goto done;
+    }
   }
   thiz->state = GST_STATE_NULL;
   thiz->pending_state = GST_STATE_READY;
-  PRINT ("%d branches created and set state to READY", g_list_length (thiz->branches));
+  PRINT ("%d branches created and set state to READY",
+      g_list_length (thiz->branches));
 
   if (interactive) {
     thiz->io_stdin = g_io_channel_unix_new (fileno (stdin));
@@ -586,7 +606,7 @@ done:
     g_main_loop_unref (thiz->loop);
 
   for (l = thiz->branches; l; l = g_list_next (l)) {
-    g_autoptr(GstBus) bus = NULL;
+    g_autoptr (GstBus) bus = NULL;
 
     branch = l->data;
     bus = gst_pipeline_get_bus (GST_PIPELINE (branch->pipeline));
