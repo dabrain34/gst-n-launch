@@ -1,11 +1,14 @@
 # gst-n-launch
 
 ## Install meson and ninja
+
 Meson 0.48 or newer is required.
 On Linux and macOS you can get meson through your package manager or using:
+
 ```
 $ pip3 install --user meson
 ```
+
 This will install meson into ~/.local/bin which may or may not be included
 automatically in your PATH by default.
 
@@ -15,15 +18,14 @@ binary in your PATH.
 
 ## Build 
 
-You can get all GStreamer built running:
-
-meson build/
-ninja -C build/
-
+```
+# meson build/ && ninja -C build/
+```
 
 ## Usage:
 
-Create two complete branches in the same pipeline
+Create two complete branches in the same pipeline:
+
 ```
-./gst-n-launch -b "videotestsrc ! autovideosink" -b "videotestsrc num-buffers=100 ! videoconvert ! autovidosink"
+#./gst-n-launch -b "videotestsrc ! autovideosink" -b "videotestsrc num-buffers=100 ! videoconvert ! autovidosink"
 ```
