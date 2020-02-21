@@ -344,8 +344,6 @@ destroy_branch (gpointer data)
   gst_element_set_state (branch->pipeline, GST_STATE_NULL);
   if (branch->pipeline)
     gst_object_unref (branch->pipeline);
-  if (branch->deep_notify_id != 0)
-    g_signal_handler_disconnect (branch->pipeline, branch->deep_notify_id);
 }
 
 GstScalableBranch *
@@ -454,7 +452,8 @@ add_branch (GstNLaunchPlayer * thiz, gchar * src_desc, gchar * branch_desc,
     branch->deep_notify_id =
         gst_element_add_property_deep_notify_watch (branch->pipeline, NULL,
         TRUE);
-  }
+  } else
+    branch->deep_notify_id = 0;
   if (!set_branch_state (branch, GST_STATE_READY))
     goto error;
 
@@ -609,6 +608,8 @@ done:
     g_autoptr (GstBus) bus = NULL;
 
     branch = l->data;
+    if (branch->deep_notify_id != 0)
+      gst_element_remove_property_notify_watch (branch->pipeline, branch->deep_notify_id);
     bus = gst_pipeline_get_bus (GST_PIPELINE (branch->pipeline));
 
     gst_bus_remove_signal_watch (bus);
