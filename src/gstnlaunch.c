@@ -25,6 +25,14 @@
 #ifdef G_OS_UNIX
 #include <glib-unix.h>
 #endif
+#include <linux/kernel.h>
+#include <unistd.h>
+#include <sys/syscall.h>
+#include <time.h>
+#include <linux/types.h>
+#include <sched.h>
+#include <linux/sched.h>
+#include <sys/types.h>
 
 GST_DEBUG_CATEGORY (scalable_transcoder_debug);
 #define GST_CAT_DEFAULT scalable_transcoder_debug
@@ -511,6 +519,158 @@ usage ()
       "  p - Toggle between Play and Pause\n" "  q - Quit");
 }
 
+
+#define SCHED_DEADLINE  6
+
+/* __NR_sched_setattr number */
+#ifndef __NR_sched_setattr
+#ifdef __x86_64__
+#define __NR_sched_setattr      314
+#endif
+
+#ifdef __i386__
+#define __NR_sched_setattr      351
+#endif
+
+#ifdef __arm__
+#define __NR_sched_setattr      380
+#endif
+
+#ifdef __aarch64__
+#define __NR_sched_setattr      274
+#endif
+#endif
+
+/* __NR_sched_getattr number */
+#ifndef __NR_sched_getattr
+#ifdef __x86_64__
+#define __NR_sched_getattr      315
+#endif
+
+#ifdef __i386__
+#define __NR_sched_getattr      352
+#endif
+
+#ifdef __arm__
+#define __NR_sched_getattr      381
+#endif
+
+#ifdef __aarch64__
+#define __NR_sched_getattr      275
+#endif
+#endif
+
+struct sched_attr {
+    __u32 size;
+
+    __u32 sched_policy;
+    __u64 sched_flags;
+
+    /* SCHED_NORMAL, SCHED_BATCH */
+    __s32 sched_nice;
+
+    /* SCHED_FIFO, SCHED_RR */
+    __u32 sched_priority;
+
+    /* SCHED_DEADLINE */
+    __u64 sched_runtime;
+    __u64 sched_deadline;
+    __u64 sched_period;
+};
+
+int sched_setattr(pid_t pid,
+              const struct sched_attr *attr,
+              unsigned int flags)
+{
+    return syscall(__NR_sched_setattr, pid, attr, flags);
+}
+
+int sched_getattr(pid_t pid,
+              struct sched_attr *attr,
+              unsigned int size,
+              unsigned int flags)
+{
+    return syscall(__NR_sched_getattr, pid, attr, size, flags);
+}
+
+static void
+display_sched_attr(int policy, struct sched_param *param)
+{
+    printf("    policy=%s, priority=%d\n",
+            (policy == SCHED_FIFO)  ? "SCHED_FIFO" :
+            (policy == SCHED_RR)    ? "SCHED_RR" :
+            (policy == SCHED_OTHER) ? "SCHED_OTHER" :
+            "???",
+            param->sched_priority);
+}
+
+
+static void
+display_thread_sched_attr()
+{
+    int policy, s;
+    struct sched_param param;
+
+    s = pthread_getschedparam(pthread_self(), &policy, &param);
+
+    if (s != 0)
+      g_printerr ("Failed to setup thread priority: %s\n", g_strerror (errno));
+
+    display_sched_attr(policy, &param);
+}
+
+#define THREAD_PRIORITY 94
+
+void run_deadline()
+{
+   struct sched_attr attr;
+   int ret;
+   unsigned int flags = 0;
+   ret = sched_getattr(0, &attr,sizeof(attr), flags);
+   if (ret < 0) {
+       PRINT("sched_setattr");
+   }
+   g_print ("result %d %llu %llu %llu\n", attr.sched_policy, attr.sched_runtime, attr.sched_period, attr.sched_deadline);
+
+
+   attr.size = sizeof(attr);
+   attr.sched_flags = 0;
+   attr.sched_nice = 0;
+   attr.sched_priority = 0;
+
+   /* creates a 10ms/30ms reservation */
+   attr.sched_policy = SCHED_DEADLINE;
+   attr.sched_runtime = 10 * 10 * 1000;
+   attr.sched_period  = 30 * 10 * 1000;
+   attr.sched_deadline= 30 * 10 * 1000;
+
+   ret = sched_setattr(0, &attr, flags);
+   if (ret < 0) {
+       PRINT("sched_setattr");
+   }
+   display_thread_sched_attr();
+}
+
+static void
+setup_thread_priority (int schedule_priority)
+{
+#if defined(__arm__) || defined(__aarch64__)
+  pthread_t self = pthread_self ();
+  struct sched_param params;
+  gint ret;
+  PRINT("setup_thread_priority");
+  display_thread_sched_attr();
+  params.sched_priority = THREAD_PRIORITY;
+
+  ret = pthread_setschedparam (self, SCHED_RR, &params);
+  if (ret != 0)
+    g_printerr ("Failed to setup thread priority: %s\n", g_strerror (errno));
+  else
+    g_message ("Thread has been set to prority %i.", params.sched_priority);
+#endif
+}
+
+
 int
 main (int argc, char **argv)
 {
@@ -526,6 +686,7 @@ main (int argc, char **argv)
   GList *l;
   gint repeat = 1;
   gint i = 0;
+  gint schedule_priority = -1;
 
   GOptionEntry options[] = {
     {"branch", 'b', 0, G_OPTION_ARG_STRING_ARRAY, &full_branch_desc_array,
@@ -537,11 +698,15 @@ main (int argc, char **argv)
     {"verbose", 'v', 0, G_OPTION_ARG_NONE, &verbose,
         ("Output status information and property notifications"), NULL}
     ,
+    {"priority", 'p', 0, G_OPTION_ARG_INT, &schedule_priority,
+        ("Change scheduling priority"), NULL}
+    ,
     {"interactive", 'i', 0, G_OPTION_ARG_NONE, &interactive,
         ("Put on interactive mode with branches in GST_STATE_READY"), NULL}
     ,
     {NULL}
   };
+
 
   thiz = g_new0 (GstNLaunchPlayer, 1);
 
@@ -555,6 +720,12 @@ main (int argc, char **argv)
     goto done;
   }
   g_option_context_free (ctx);
+  PRINT("schedule priority %d",schedule_priority);
+  //if (schedule_priority >=0 )
+  {
+      setup_thread_priority(schedule_priority);
+      //run_deadline();
+  }
   thiz->interactive = interactive;
   thiz->verbose = verbose;
   GST_DEBUG_CATEGORY_INIT (scalable_transcoder_debug, "n-launch", 0,
