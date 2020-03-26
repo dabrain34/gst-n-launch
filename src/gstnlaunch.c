@@ -50,6 +50,7 @@ typedef struct _GstNLaunchPlayer
   GstState state;
   gboolean auto_play;
   gboolean verbose;
+  gboolean drain;
 } GstNLaunchPlayer;
 
 typedef struct _GstScalableBranch
@@ -63,6 +64,8 @@ typedef struct _GstScalableBranch
   gchar **exclude_args;
   gulong deep_notify_id;
   gboolean eos;
+  guint element_added_id;
+  gchar *desc;
 } GstScalableBranch;
 
 #define PRINT(FMT, ARGS...) do { \
@@ -335,6 +338,45 @@ message_cb (GstBus * bus, GstMessage * message, gpointer user_data)
   return TRUE;
 }
 
+static GstPadProbeReturn
+sink_events_cb (GstPad * pad, GstPadProbeInfo * probe_info, void *user_data)
+{
+  GstPadProbeReturn ret = GST_PAD_PROBE_OK;
+  GstEvent *event = GST_PAD_PROBE_INFO_EVENT (probe_info);
+  GstScalableBranch *branch = (GstScalableBranch *) user_data;
+
+  switch (GST_EVENT_TYPE (event)) {
+    case GST_EVENT_EOS:
+      GST_DEBUG_OBJECT (branch, "EOS reached the sink");
+      if (branch->player->drain) {
+        GstQuery *query = gst_query_new_drain ();
+        if (!gst_pad_query (pad, query))
+          GST_DEBUG_OBJECT (branch, "drain query failed");
+        gst_query_unref (query);
+      }
+      break;
+    default:
+      break;
+  }
+
+  return ret;
+}
+
+static void
+element_added_cb (GstBin * bin, GstBin * sub_bin, GstElement * element,
+    GstScalableBranch * branch)
+{
+  GST_ERROR_OBJECT (branch, "Element %s added to branch with desc %s",
+      GST_ELEMENT_NAME (element)
+      , branch->desc);
+  if (!GST_IS_BIN(element) && GST_OBJECT_FLAG_IS_SET (element, GST_ELEMENT_FLAG_SINK)) {
+    GstPad* pad = gst_element_get_static_pad (element, "sink");
+    gst_pad_add_probe (pad,
+        GST_PAD_PROBE_TYPE_EVENT_DOWNSTREAM, sink_events_cb,
+        branch, (GDestroyNotify) g_free);
+  }
+}
+
 void
 destroy_branch (gpointer data)
 {
@@ -342,10 +384,14 @@ destroy_branch (gpointer data)
   PRINT ("Destroying %s", GST_ELEMENT_NAME (branch->pipeline));
   gst_element_set_state (branch->pipeline, GST_STATE_READY);
   gst_element_set_state (branch->pipeline, GST_STATE_NULL);
-  if (branch->pipeline)
-    gst_object_unref (branch->pipeline);
   if (branch->deep_notify_id != 0)
     g_signal_handler_disconnect (branch->pipeline, branch->deep_notify_id);
+  if (branch->element_added_id != 0)
+    g_signal_handler_disconnect (branch->pipeline, branch->element_added_id);
+  if (branch->pipeline)
+    gst_object_unref (branch->pipeline);
+
+  g_free (branch->desc);
 }
 
 GstScalableBranch *
@@ -361,11 +407,19 @@ add_branch (GstNLaunchPlayer * thiz, gchar * src_desc, gchar * branch_desc,
 
   GST_DEBUG ("Add branch with src %s transform %s sink %s",
       src_desc, branch_desc, sink_desc);
+  if (!branch_desc)
+    goto error;
+
   /* create source element and add it to the main pipeline */
   /* create transform bin element and add it to the main pipeline */
   branch = g_new0 (GstScalableBranch, 1);
   branch->pipeline = gst_pipeline_new (NULL);
   branch->state = GST_STATE_NULL;
+  branch->desc = g_strdup (branch_desc);
+  branch->element_added_id =
+      g_signal_connect (GST_BIN (branch->pipeline), "deep-element-added",
+      G_CALLBACK (element_added_cb), branch);
+
   if (!src_desc && !sink_desc)
     transform = gst_parse_launch_full (branch_desc, NULL, GST_PARSE_FLAG_NONE,
         &err);
@@ -462,6 +516,8 @@ done:
   return branch;
 
 error:
+  if (!branch_desc)
+    GST_ERROR ("Please provide a branch description");
   if (src_pad)
     gst_object_unref (src_pad);
   if (sink_pad)
@@ -470,9 +526,6 @@ error:
   branch = NULL;
   goto done;
 }
-
-
-
 
 /* Process keyboard input */
 static gboolean
@@ -518,7 +571,6 @@ main (int argc, char **argv)
   int res = EXIT_SUCCESS;
   GError *err = NULL;
   GOptionContext *ctx;
-  GstNLaunchPlayer *thiz;
   GstScalableBranch *branch;
   gchar **full_branch_desc_array = NULL;
   gchar **branch_desc;
@@ -527,7 +579,7 @@ main (int argc, char **argv)
   GList *l;
   gint repeat = 1;
   gint i = 0;
-
+  GstNLaunchPlayer *thiz = g_new0 (GstNLaunchPlayer, 1);
   GOptionEntry options[] = {
     {"branch", 'b', 0, G_OPTION_ARG_STRING_ARRAY, &full_branch_desc_array,
         "Add a custom branch with gst-launch style description", NULL}
@@ -541,10 +593,11 @@ main (int argc, char **argv)
     {"interactive", 'i', 0, G_OPTION_ARG_NONE, &interactive,
         ("Put on interactive mode with branches in GST_STATE_READY"), NULL}
     ,
+    {"drain", 'd', 0, G_OPTION_ARG_NONE, &thiz->drain,
+        ("Send Drain query before EOS to each sink in the branch(es)"), NULL}
+    ,
     {NULL}
   };
-
-  thiz = g_new0 (GstNLaunchPlayer, 1);
 
   ctx = g_option_context_new ("[ADDITIONAL ARGUMENTS]");
   g_option_context_add_main_entries (ctx, options, NULL);
